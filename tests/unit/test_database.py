@@ -19,7 +19,7 @@ class TestDatabaseConnectionConfig:
         # whose URL happened to carry the service name. Assert the PARSE instead:
         # DB_NAME must be exactly the database component of DATABASE_URL.
         expected = DATABASE_URL.rsplit("/", 1)[-1].split("?", 1)[0]
-        assert DB_NAME == expected
+        assert expected == DB_NAME
 
     def test_db_host_parsed(self):
         assert isinstance(DB_HOST, str)
