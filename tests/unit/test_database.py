@@ -4,15 +4,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.database.connection import DB_HOST, DB_NAME, DB_PORT
+from src.database.connection import DATABASE_URL, DB_HOST, DB_NAME, DB_PORT
 
 
 class TestDatabaseConnectionConfig:
     def test_db_name_parsed(self):
         assert isinstance(DB_NAME, str)
         assert len(DB_NAME) > 0
-        # Should match the DB name from the test DATABASE_URL
-        assert "tts" in DB_NAME.lower()
+        # Should match the DB name from the test DATABASE_URL — which is what the
+        # comment always claimed, but the assertion hardcoded the LOCAL name.
+        # CI names the database `app_ci` (ci-public.yml: `_ci`/`_test` is required,
+        # because the suites TRUNCATE whatever DATABASE_URL points at), so the
+        # substring check failed on every CI run and passed only on a dev box
+        # whose URL happened to carry the service name. Assert the PARSE instead:
+        # DB_NAME must be exactly the database component of DATABASE_URL.
+        expected = DATABASE_URL.rsplit("/", 1)[-1].split("?", 1)[0]
+        assert expected == DB_NAME
 
     def test_db_host_parsed(self):
         assert isinstance(DB_HOST, str)
