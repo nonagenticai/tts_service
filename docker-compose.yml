@@ -1,0 +1,172 @@
+services:
+  # ============================================================================
+  # PostgreSQL Database
+  # ============================================================================
+  tts_postgres:
+    image: postgres:18-alpine
+    container_name: tts_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: tts_service
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5434:5432"
+    volumes:
+      - tts_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tts-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # PostgreSQL — test database (pytest only, never the app)
+  #
+  # Deliberately a SEPARATE server from `tts_postgres` above: it mirrors the CI
+  # container, where the gitops archetype runs a stock postgres:18 with
+  # POSTGRES_USER=ci_test — which makes ci_test a SUPERUSER. Pointing pytest at
+  # the app's restricted role would diverge from CI on anything needing elevated
+  # rights.
+  #
+  # tmpfs, no named volume: test data is worthless by definition, and a persisted
+  # volume is how a stale schema survives across model changes.
+  # ============================================================================
+  tts_service_test_postgres:
+    image: postgres:18-alpine
+    container_name: tts_service_test_postgres
+    environment:
+      # Throwaway local-test credentials, not a secret. Must match the local
+      # default in tests/conftest.py and scripts/ci-local.sh.
+      POSTGRES_USER: ci_test
+      POSTGRES_PASSWORD: ci_test_password_secure # pragma: allowlist secret
+      POSTGRES_DB: tts_service_ci
+      POSTGRES_INITDB_ARGS: "-E UTF8"
+    ports:
+      - "5475:5432"
+    # postgres:18 keeps data in a versioned subdir (/var/lib/postgresql/18/docker)
+    # and REFUSES TO START if you mount over the old /var/lib/postgresql/data path.
+    # The image's own guidance is a single mount at /var/lib/postgresql.
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ci_test -d tts_service_ci"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    networks:
+      - tts-network
+
+  # ============================================================================
+  # Redis Cache
+  # ============================================================================
+  tts-redis:
+    image: redis:7-alpine
+    container_name: tts_redis
+    command: redis-server --appendonly yes
+    ports:
+      - "6380:6379"
+    volumes:
+      - tts_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tts-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # TTS Service API
+  # ============================================================================
+  tts-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tts_api
+    environment:
+      # Application
+      ENVIRONMENT: production
+      APP_NAME: TTS Service
+      APP_VERSION: 0.1.0
+
+      # Database
+      DATABASE_URL: postgresql+psycopg://postgres:${POSTGRES_PASSWORD:-changeme}@tts_postgres:5432/tts_service
+      POSTGRES_POOL_MIN_SIZE: 2
+      POSTGRES_POOL_MAX_SIZE: 10
+      DATABASE_POOL_TIMEOUT: 30
+      DATABASE_POOL_RECYCLE: 3600
+      DATABASE_ECHO: "false"
+
+      # Redis
+      REDIS_URL: redis://tts-redis:6379/0
+      REDIS_MAX_CONNECTIONS: 10
+
+      # API
+      API_HOST: 0.0.0.0
+      API_PORT: 6194
+      API_DEBUG: "false"
+      API_RELOAD: "false"
+      API_CORS_ORIGINS: "http://localhost:*,http://127.0.0.1:*"
+
+      # Auth
+      AUTH_ENABLED: "false"
+      # NO DEFAULT/FALLBACK TENANT — see src/services/metering.py. An absent
+      # tenant is a 401, never a substituted default.
+
+      # Storage
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_PATH: /app/data/audio
+
+      # Providers
+      KOKORO_ENABLED: "true"
+      KITTEN_ENABLED: "true"
+      OPENAI_TTS_ENABLED: "true"
+      OPENAI_TTS_API_KEY: ${OPENAI_TTS_API_KEY:-}
+      ELEVENLABS_ENABLED: "true"
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+
+      # Logging
+      LOG_LEVEL: INFO
+      LOG_JSON_LOGS: "false"
+    ports:
+      - "6194:6194"
+    volumes:
+      - tts_audio_data:/app/data/audio
+      - ./logs:/app/logs
+    depends_on:
+      tts_postgres:
+        condition: service_healthy
+      tts-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6194/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - tts-network
+    restart: unless-stopped
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  tts-network:
+    driver: bridge
+
+# ============================================================================
+# Volumes
+# ============================================================================
+volumes:
+  tts_postgres_data:
+    name: tts_postgres_data
+  tts_redis_data:
+    name: tts_redis_data
+  tts_audio_data:
+    name: tts_audio_data

@@ -1,0 +1,267 @@
+[project]
+license = "Apache-2.0"
+name = "tts-service"
+version = "0.1.0"
+description = "Text-to-Speech microservice with multiple provider support (Kokoro, KittenTTS, OpenAI, ElevenLabs)"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[all]>=0.135.0",
+
+    "uvicorn[standard]>=0.41.0",
+
+    "psycopg[binary,pool]>=3.3.0",
+
+    "sqlalchemy[asyncio]>=2.0.48",
+
+    "pydantic>=2.12.0",
+
+    "pydantic-settings>=2.14.2",  # GHSA-4xgf-cpjx-pc3j fixed in 2.14.2
+
+    "python-dotenv>=1.2.0",
+
+    "redis>=7.3.0",
+
+    "alembic>=1.18.0",
+
+    "httpx[http2]>=0.28.0",
+
+    "cachetools>=7.0.0",
+
+    "miniopy-async>=1.23.0",
+
+    "lingua-language-detector>=2.2.0",
+
+    "defusedxml>=0.7.1",
+    "structlog>=25.5.0",
+
+    "w2v-common>=0.104.0",  # storage/auth facade + auth.entitlement (HTTP + WS license gate)
+    # --- Security floors on transitive dependencies ---
+    # Neither package is imported by this service directly; both arrive as
+    # transitives (aiohttp via miniopy-async, cryptography via pyjwt and
+    # w2v-common). The lock was already moved to safe versions fleet-wide, but
+    # a lock is a point-in-time resolution: the next unrelated `uv lock` is
+    # free to walk an undeclared transitive back DOWN, silently, with green CI.
+    # The declared floor is the only thing that binds it. Regression-tested by
+    # tests/unit/test_security_floors.py. Precedent: analysis_service #175/#176.
+    #
+    # aiohttp 3.14.1 was flagged by CVE-2026-59881 + CVE-2026-69243 (fixed in
+    # 3.14.2) and CVE-2026-69244 (fixed in 3.14.3); 3.14.3 was then flagged by
+    # CVE-2026-111063 + CVE-2026-111064 + GHSA-2g87-pp6c-29x5 (fixed in 3.14.4).
+    "aiohttp>=3.14.4",
+    # cryptography: CVE-2026-69247 (GHSA-g6cj-pr64-35w5) was introduced in
+    # 44.0.0 and fixed in 50.0.0, so the previously-locked 49.0.0 was affected.
+    "cryptography>=50.0.0",
+    # h2: CVE-2026-71554 affects 4.3.0 and is fixed in 4.4.1. It arrives as a
+    # transitive of the `httpx[http2]` extra declared above.
+    "h2>=4.4.1",
+    # setuptools: GHSA-h35f-9h28-mq5c / PYSEC-2026-3447 affects 81.0.0 (and the
+    # 82.0.1 that preceded it -- both were vulnerable) and is fixed in 83.0.0.
+    # `spacy`/`thinc` declare setuptools uncapped; the real cap was `torch`,
+    # which declared `setuptools<82` through 2.12.1 and first dropped it in
+    # 2.13.0. That torch bump is done in the `kokoro` extra below, so this floor
+    # is now declarable. It arrives purely as a transitive (spacy/thinc/torch);
+    # the floor lives here because [project].dependencies is the only place the
+    # security-floor regression test can bind it.
+    "setuptools>=84.1.0",
+    # pyjwt: CVE-2026-101918 affects 2.14.0 (the previously-locked version) and
+    # is fixed in 2.15.1. Not imported directly; it arrives as a transitive of
+    # w2v-common (auth facade).
+    "pyjwt>=2.15.1",
+    # urllib3: CVE-2026-97687 + CVE-2026-97688 + CVE-2026-97689 affect 2.7.0
+    # (the previously-locked version) and are fixed in 2.8.0. Not imported
+    # directly; it arrives as a transitive of `requests`, `sentry-sdk` and `w2v-common`.
+    "urllib3>=2.8.0",
+]
+
+[project.scripts]
+tts-service = "src.asgi:main"
+
+[project.optional-dependencies]
+kokoro = [
+    "kokoro>=0.3.0",
+    "soundfile>=0.13.0",
+
+    # torch 2.13.0 is the first release that (a) is unaffected by CVE-2025-3000
+    # and (b) drops the `setuptools<82` cap that blocked the PYSEC-2026-3447
+    # remediation above. Both ignores are removed from ci.yaml /
+    # .pip-audit-ignore in the same change.
+    "torch>=2.13.0",
+    "spacy>=3.8.11",
+]
+kitten = [
+    "kittentts>=0.1.0",
+    # `kittentts` declares plain `phonemizer`; `misaki` (kokoro's phonemiser)
+    # declares `phonemizer-fork`. BOTH distributions install the SAME top-level
+    # `phonemizer/` package, so with both extras installed the loser of the
+    # unpack race silently overwrites the winner. Upstream `phonemizer` 3.3.0
+    # has no `EspeakWrapper.set_data_path`, which `misaki/espeak.py` calls at
+    # import time -> AttributeError inside the kokoro prewarm. The fork is a
+    # superset and satisfies kittentts too, so it is declared here and plain
+    # `phonemizer` is overridden out of the graph in [tool.uv] below.
+    "phonemizer-fork>=3.3.2",
+]
+all-providers = [
+    "tts-service[kokoro,kitten]",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.0",
+
+    "pytest-asyncio>=1.3.0",
+
+    "pytest-cov>=7.0.0",
+
+    "pytest-timeout>=2.4.0",
+
+    "httpx>=0.28.0",
+    "ruff>=0.15.0",
+
+    "ty>=0.0.23",
+
+    "pip-audit>=2.10.0",
+    # Transitive via pip-audit -> pip-api -> pip. PYSEC-2026-3721 affects
+    # pip < 26.2; declared explicitly so a future `uv lock` cannot walk the
+    # lock back into the vulnerable range with pip-audit still green.
+    "pip>=26.2",
+
+    "detect-secrets>=1.5.0",
+    "bandit>=1.9.4",
+
+    "fakeredis>=2.34.0",
+]
+
+[tool.uv]
+# Build-environment pin, NOT a runtime dependency. `curated-tokenizers` 0.0.9
+# (transitive: kokoro -> misaki[en] -> spacy-curated-transformers) ships no
+# cp314 wheel, so uv must cythonize its sdist. Cython 3.3.0 (released
+# 2026-08-22) crashes on curated_tokenizers/_bbpe.pyx with
+# "Compiler crash in OptimizeBuiltinCalls / TypeError: 'NoneType' object is
+# unsliceable", which reds `uv sync --all-extras` on every COLD build cache.
+# 3.2.9 compiles it. Drop this pin when curated-tokenizers builds under 3.3.
+build-constraint-dependencies = ["cython<3.3"]
+override-dependencies = [
+    # miniopy-async (1.23.5, the LATEST) caps the CA-certificate bundle:
+    #   certifi>=2025.1.31,<2026.0.0
+    # That is lazy upper-bounding, not a real incompatibility -- certifi's entire
+    # public API is where()/contents() and has been stable for years, while the
+    # package's whole purpose is to ship CURRENT roots. Left alone the cap pins
+    # every MinIO-using repo in this fleet to a trust store from Nov 2025, and no
+    # relock cadence can move it (verified by making uv name the constraint).
+    #
+    # NOT overriding miniopy-async's argon2-cffi<24.0.0 alongside it: that is a
+    # MAJOR bump with real API surface, so it needs its own testing rather than
+    # riding along with a data-only package.
+    #
+    # Precedent: analysis_service, bdd_playwright_service, video_production_service
+    # all carry this exact entry and sit on certifi 2026.7.22 with green CI.
+    "certifi>=2026.7.22",
+    # Drop plain `phonemizer` from the graph entirely. It is a FILE-LEVEL
+    # collision with `phonemizer-fork` (both own `phonemizer/`), not a version
+    # conflict, so no floor or cap can resolve it -- whichever unpacks last
+    # wins, which made `uv sync --all-extras` nondeterministically ship an
+    # `EspeakWrapper` without `set_data_path` and red the suite at
+    # `misaki/espeak.py` import time. The fork is a strict superset, is pulled
+    # by misaki, and is declared explicitly in the `kitten` extra so a
+    # kitten-only install still gets the module. Never-true marker == remove.
+    "phonemizer ; python_version < '3.0'",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "I", "N", "W", "UP", "ANN", "B", "BLE", "A", "S", "C901",
+    "RUF", "RET", "SIM", "ASYNC", "PTH", "TID251",
+]
+ignore = [
+    "E501",
+    "B008",
+    "ASYNC240",
+    "ASYNC109"
+]
+
+# uuid7 is the id standard (stdlib, py3.14). TID251 bans `uuid4` in production
+# code via ruff — enforced in CI (`ruff check .`), not only local pre-commit.
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"uuid.uuid4".msg = "uuid7 is the w2v id standard — use uuid.uuid7() (stdlib, py3.14)."
+
+[tool.ruff.lint.per-file-ignores]
+"src/database/migrations/*" = ["I001", "ANN"]
+"tests/**/*.py" = ["S101", "S104", "S105", "S106", "S107", "S108", "ANN", "PTH", "ASYNC110", "ASYNC230", "ASYNC240", "SIM115", "SIM117", "TID251"]
+
+# ── ANN401 ratchet (see [tool.ruff.lint].ignore note) ─────────────────────────
+# These files still carry `Any` in a function signature. Do NOT add to this list.
+# When you type a file's seam with pydantic models, DELETE its line here — that
+# re-enables ANN401 for the file and locks the win in. Target: empty.
+"src/api/usage.py" = ["ANN401"]
+"src/api/ws.py" = ["ANN401"]
+"src/asgi.py" = ["ANN401"]
+"src/config.py" = ["ANN401"]
+"src/providers/kokoro_provider.py" = ["ANN401"]
+"src/services/notification_service.py" = ["ANN401"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "unit: unit tests",
+    "integration: integration tests",
+]
+
+[tool.coverage.report]
+fail_under = 80
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+unresolved-import = "error"
+unresolved-reference = "error"
+unresolved-attribute = "error"
+possibly-unresolved-reference = "error"
+possibly-missing-attribute = "error"
+missing-argument = "error"
+invalid-argument-type = "error"
+invalid-return-type = "error"
+
+# Optional vendor libs (kittentts, kokoro, torch, soundfile, numpy) aren't in
+# the prod lockfile; ty rightly can't resolve them. Scope the suppression to
+# the local-provider modules that import them lazily instead of scattering
+# source-level `# ty: ignore[unresolved-import]` comments.
+# `src/asgi.py` joins the list because `_prewarm_kokoro` must import torch/kokoro
+# on the MAIN thread (see the comment there); the import cannot live in the
+# already-suppressed provider module without moving back off the main thread.
+[[tool.ty.overrides]]
+include = [
+    "src/asgi.py",
+    "src/providers/kitten_provider.py",
+    "src/providers/kokoro_provider.py",
+    "tests/unit/test_coverage_boost.py",
+    "tests/unit/test_prewarm_main_thread_import.py",
+]
+
+[tool.ty.overrides.rules]
+unresolved-import = "ignore"
+
+[tool.bandit]
+targets = ["src"]
+exclude_dirs = ["tests", ".venv"]
+skips = ["B311"]
+
+[tool.uv.sources]
+# The published source tree resolves its shared library from the public
+# repository at the release tag; the private index is not reachable here.
+w2v-common = { git = "https://github.com/nonagenticai/w2v_common", tag = "v0.115.4" }

@@ -1,0 +1,10 @@
+# Each line is one vulnerability ID to skip during pip-audit.
+# Format: ID  # package date (reason)
+# Add only when no fix version exists upstream. Re-evaluate periodically.
+#
+# EMPTY ON PURPOSE. The two entries that used to live here (CVE-2025-3000 on
+# torch 2.11.0, PYSEC-2026-3447 on setuptools 81.0.0) are FIXED, not ignored:
+# torch>=2.13.0 clears the first and drops the `setuptools<82` cap that blocked
+# the second, so setuptools now resolves to 84.0.0. Verified with
+# `uv sync --all-extras && uv run pip-audit` -> "No known vulnerabilities
+# found", rc=0, with no ignore flags.
